@@ -1,0 +1,37 @@
+In the context of Java Virtual Threads, Pinning is a state where a virtual thread becomes "stuck" to its carrier (OS) thread.
+Normally, when a virtual thread hits a blocking operation (like an API call), it "unmounts" from the OS thread so another virtual thread can use it. When pinning occurs, the virtual thread cannot unmount. It remains glued to the OS thread, preventing the JVM from using that OS thread for any other tasks.
+Why does Pinning happen?
+There are two primary reasons why a virtual thread gets pinned:
+ * Synchronized Blocks/Methods: If a virtual thread executes a synchronized block or method and then performs a blocking I/O operation inside it, the JVM cannot currently unmount the thread.
+ * Native Code: If the thread calls a native method (JNI) or a foreign function and hits a blocking point there.
+Why is Pinning a problem?
+If you have a pool of 20 carrier (OS) threads and you have 20 virtual threads that are all "pinned" because they are waiting for a slow Salesforce API inside a synchronized block, your entire application freezes. Even if you have 1,000 other virtual threads ready to work, they have no available OS threads to run on. This effectively kills the scalability benefits of Project Loom.
+How to detect Pinning
+You won't see an error in your logs, but you will see high latency. You can detect it using JDK Flight Recorder (JFR):
+ * Look for the event: jdk.VirtualThreadPinned
+ * It will tell you exactly which line of code caused the pin and how long it lasted.
+How to fix Pinning
+The most common fix is to replace the synchronized keyword with a ReentrantLock.
+Before (Causes Pinning):
+public synchronized void callSalesforce(Record r) {
+    // If this HTTP call is slow, the OS thread is trapped here
+    restTemplate.postForEntity(...); 
+}
+
+After (No Pinning):
+private final ReentrantLock lock = new ReentrantLock();
+
+public void callSalesforce(Record r) {
+    lock.lock();
+    try {
+        // The virtual thread can now unmount and free the OS thread!
+        restTemplate.postForEntity(...);
+    } finally {
+        lock.unlock();
+    }
+}
+
+Should you worry about it?
+Most modern libraries (like the latest versions of Spring, Hibernate, and the JDBC drivers) have already been updated to use ReentrantLock instead of synchronized to avoid this exact issue. However, if you are using a legacy library or your own old utility classes, you should check them for synchronized blocks that contain I/O calls.
+Would you like me to show you a small "Pinning Trap" code example that you can run to see the performance drop yourself?
+
