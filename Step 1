@@ -1,0 +1,69 @@
+Learning virtual threads is essentially about unlearning the habit of "hoarding" threads. Since you're looking to master this step-by-step,
+we should start from the syntax and move into enterprise-grade implementation.
+
+Step 1: Environmental Setup
+Virtual threads were finalized in Java 21. Ensure your environment is ready:
+ * JDK: Install JDK 21 or later.
+ * Build Tool: If using Maven or Gradle, ensure your compiler target is set to 21.
+ * IDE: Use a modern version of IntelliJ IDEA or Eclipse that supports Project Loom features.
+
+Step 2: Creating Your First Virtual Thread
+There are two primary ways to create a single virtual thread. Unlike platform threads, 
+these are not active by default upon creation unless you use the .start() method.
+// Method A: Using the Thread builder
+Thread vThread = Thread.ofVirtual()
+        .name("worker-", 1)
+        .start(() -> {
+            System.out.println("Running on: " + Thread.currentThread());
+        });
+
+// Method B: Using an unstarted thread (useful for custom scheduling)
+Thread unstarted = Thread.ofVirtual().unstarted(() -> {
+    System.out.println("I haven't started yet!");
+});
+unstarted.start();
+
+Step 3: Moving to the ExecutorService
+In a real-world backend, you rarely manage individual threads. You use an ExecutorService. Java 21 introduced a specialized executor that creates a new virtual thread for every task.
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    executor.submit(() -> {
+        // Simulating a blocking I/O call (e.g., calling a REST API)
+        Thread.sleep(Duration.ofSeconds(1));
+        return "Task Complete";
+    });
+} // AutoCloseable ensures all threads finish before exiting the block
+
+Step 4: Integrating with Spring Boot 3.2+
+If you are working with Spring Boot, you don't need to manually configure bean executors anymore. 
+Starting from Spring Boot 3.2, you can enable virtual threads with a single property in your application.properties:
+spring.threads.virtual.enabled=true
+
+What this does:
+ * Configures Tomcat/Jetty to use virtual threads for handling web requests.
+ * Configures @Async methods to run on virtual threads.
+ * Configures Task Schedulers to use virtual threads.
+
+Step 5: Handling "Thread Pinning"
+This is the most critical "gotcha" for senior developers. A virtual thread can get "pinned" to its carrier (OS) thread, meaning the OS thread can't be released while waiting for I/O. This happens when:
+ * Executing code inside a synchronized block or method.
+ * Calling a native method (JNI).
+The Solution: Replace synchronized with java.util.concurrent.locks.ReentrantLock in your utility classes and shared services.
+
+Step 6: Observability
+Because you might have 100,000 threads running, traditional thread dumps are unreadable.
+ * JDK Flight Recorder (JFR): Use this to monitor virtual thread pinning and scheduling.
+ * New Thread Dump Format: Use jcmd <pid> Thread.dump_to_file -format=json <file> to get a modern, parseable view of your thread state.
+Step 7: Structured Concurrency (Preview Feature)
+If you want to go deeper, look into Structured Concurrency. It treats multiple tasks running in different threads as a single unit of work, 
+ensuring that if one sub-task fails, the others are cancelled automatically.
+// This is currently a preview feature in Java 21/22
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    Subtask<String> user = scope.fork(() -> fetchUser());
+    Subtask<Integer> order = scope.fork(() -> fetchOrder());
+
+    scope.join();           // Join both forks
+    scope.throwIfFailed();  // Propagate errors
+
+    System.out.println(user.get() + " ordered " + order.get());
+}
+
