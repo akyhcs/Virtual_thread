@@ -1,0 +1,33 @@
+This is the "magic" of how the Operating System and the JVM work together. When the virtual thread unmounts, 
+the responsibility for the API call shifts from the Java Thread to the OS Network Stack and the Network Hardware.
+Here is the "relay race" that happens when your code calls Salesforce:
+1. The Handoff (The Request)
+When your code executes restTemplate.post(...) or httpClient.send(...), the virtual thread sends the data to the Operating System's socket.
+ * The JVM tells the OS: "I want to send this data to Salesforce, and I'm going to wait for a response."
+ * At this exact millisecond, the JVM unmounts the virtual thread from the Carrier (OS) thread.
+2. The Waiting Period (The OS takes over)
+Now, the Carrier thread is 100% free. It goes off to process other batches or other users.
+ * Who is "watching" the API? The Operating System kernel.
+ * The OS has a highly efficient mechanism (on Linux, it's called epoll; on Windows, IOCP).
+ * The OS doesn't need a "thread" to sit there and stare at the network cable. It simply puts the socket in a "waiting" state. The network card (NIC) handles the actual electrical signals.
+3. The Signal (The Response)
+Eventually, Salesforce sends data back.
+ * The Network Card receives the bits and triggers a hardware interrupt.
+ * The OS Kernel wakes up and says: "Hey, I have data for that Java process!"
+ * The JVM receives a notification from the OS that the data is ready.
+4. The Resumption (Remounting)
+The JVM looks at its list of paused virtual threads and finds the one that was waiting for that specific API response.
+ * The JVM places that virtual thread back into the "Run Queue."
+ * As soon as a Carrier (OS) thread becomes available, the JVM remounts the virtual thread onto it.
+ * Your code resumes exactly where it left off, as if it never paused.
+A Real-World Analogy: The Restaurant
+Think of it like a Waiter (The Carrier Thread) and a Customer (The Virtual Thread):
+ * Ordering: The Customer (Virtual Thread) tells the Waiter (Carrier) they want a burger (API Call).
+ * The Wait: The Waiter doesn't stand at the table staring at the Customer while the burger cooks! That would be a waste of a Waiter.
+ * Unmounting: The Waiter leaves the table to serve other customers (other Virtual Threads). The Customer is "unmounted" from the Waiter's attention.
+ * Who is taking care of the burger? The Chef (The OS/Network) is cooking it in the kitchen.
+ * The Return: When the burger is ready, the Chef dings a bell. The Waiter (Carrier) picks up the plate and returns to the Customer's table to "remount" their service.
+Why this is so fast
+In the old "Platform Thread" model, the Waiter was forced to stand at the table and stare at the customer until the food arrived. If you had 100 customers and only 20 waiters, 80 people couldn't even get in the door. With Virtual Threads, those 20 waiters can service 2,000 customers because they only spend time with them when there is actual work (ordering or eating) to do.
+Would you like to see how to use jcmd to actually see these "unmounted" threads while they are waiting for Salesforce?
+
