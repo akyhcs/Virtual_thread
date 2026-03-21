@@ -1,0 +1,75 @@
+Integrating Guava's RateLimiter with Virtual Threads is a "pro move." While a Semaphore limits how many threads can run at once,
+a RateLimiter limits how fast they can execute over time (e.g., exactly 100 requests per second).
+This is crucial for Salesforce, which has strict rolling window limits.
+The "Throttled" Orchestrator
+In this design, we will spawn 20 virtual threads (one for each batch of 100), 
+but we will tell those threads to "check in" with the RateLimiter before they actually hit the Salesforce API.
+
+import com.google.common.collect.Lists;
+import com.google.common.util.concurrent.RateLimiter;
+import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
+@Service
+public class ThrottledSalesforceOrchestrator {
+
+    private final SalesforceIntegrationService salesforceService;
+    
+    // Allow exactly 2.0 permits per second. 
+    // If each batch is 100 records, this effectively limits us to 200 records/sec.
+    private final RateLimiter throttler = RateLimiter.create(2.0);
+
+    public ThrottledSalesforceOrchestrator(SalesforceIntegrationService salesforceService) {
+        this.salesforceService = salesforceService;
+    }
+
+    public void processWithRateLimit(List<SalesforceRecord> allRecords) {
+        List<List<SalesforceRecord>> batches = Lists.partition(allRecords, 100);
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            
+            List<Callable<List<SyncResult>>> tasks = batches.stream()
+                .map(batch -> (Callable<List<SyncResult>>) () -> {
+                    
+                    // --- The Magic Line ---
+                    // This blocks the virtual thread until the rate limiter allows it.
+                    // Because it's a virtual thread, the underlying OS thread is freed!
+                    double waitTime = throttler.acquire(); 
+                    
+                    if (waitTime > 0) {
+                        System.out.println("Throttling: Waited " + waitTime + "s to stay within limits.");
+                    }
+
+                    return salesforceService.pushBatchToSalesforce(batch);
+                })
+                .toList();
+
+            List<Future<List<SyncResult>>> futures = executor.invokeAll(tasks);
+            
+            // Collect and handle results...
+            for (Future<List<SyncResult>> f : futures) {
+                System.out.println("Batch completed with " + f.get().size() + " results.");
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+
+Why this is better than a Thread.sleep()
+ * Smooth Distribution: If you ask for 2 requests per second, Guava doesn't wait 1 second and fire 2. It tracks time at the millisecond level and lets one through every 500ms. This prevents "bursting" that can trigger API firewalls.
+ * Virtual Thread Efficiency: When throttler.acquire() causes a wait, the JVM sees the virtual thread is "waiting." It unmounts it from the CPU, letting other tasks run.
+ * Adaptive: If the Salesforce API starts responding slowly, the RateLimiter still ensures you don't pile up more requests than the system can handle.
+Summary of your "Mastery" Journey so far:
+ * Virtual Threads: You've learned how to run millions of light tasks.
+ * Batching: You've learned how to group data to save network overhead.
+ * Orchestration: You've separated the "Worker" logic from the "Runner" logic.
+ * Throttling: You've learned how to protect external systems from the massive power of virtual threads.
+Would you like to see how to add a "Global Timeout" so that if the whole process takes longer than 30 seconds, all remaining virtual threads are automatically cancelled?
+
