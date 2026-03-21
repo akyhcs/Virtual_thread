@@ -1,0 +1,101 @@
+This is a very clean architectural approach. By separating the concurrency orchestration from the actual integration logic, your code becomes much easier to test, maintain, and scale.
+In this design, your new service acts as the "Orchestrator." It chops up the data, spins up the virtual threads, and delegates the actual work to your existing Salesforce service.
+Here is how you can structure this, using standard Spring Boot @Service annotations to represent the two distinct components.
+1. The Domain Objects
+public record SalesforceRecord(String accountName, String externalId) {}
+public record SyncResult(String externalId, boolean isSuccess, String salesforceId, String error) {}
+
+2. The Existing Service (The Worker)
+This is the service you already have. It knows how to talk to Salesforce but doesn't know anything about virtual threads or parallel execution.
+import org.springframework.stereotype.Service;
+import java.util.List;
+
+@Service
+public class SalesforceIntegrationService {
+
+    /**
+     * This method does the actual HTTP/API call to Salesforce.
+     * It processes a single batch synchronously.
+     */
+    public List<SyncResult> pushBatchToSalesforce(List<SalesforceRecord> batch) {
+        System.out.println(Thread.currentThread() + " executing Salesforce API call for batch size: " + batch.size());
+        
+        // 1. Convert your records to the Salesforce API format
+        // 2. Execute the REST template / HTTP Client call to Salesforce Bulk/Composite API
+        // 3. Parse the response
+        
+        // Mocking the I/O delay and response
+        try {
+            Thread.sleep(1000); // The virtual thread will yield the carrier thread here
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        return batch.stream()
+                .map(record -> new SyncResult(record.externalId(), true, "001xx00000" + record.externalId(), null))
+                .toList();
+    }
+}
+
+3. The New Service (The Orchestrator)
+This is your new service. It uses Guava to partition the data, creates the virtual threads, calls your existing service,
+and aggregates the results.
+import com.google.common.collect.Lists;
+import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
+@Service
+public class VirtualThreadOrchestratorService {
+
+    private final SalesforceIntegrationService salesforceService;
+
+    // Standard constructor injection
+    public VirtualThreadOrchestratorService(SalesforceIntegrationService salesforceService) {
+        this.salesforceService = salesforceService;
+    }
+
+    public List<SyncResult> processInParallel(List<SalesforceRecord> allRecords) {
+        // Salesforce Composite API typically accepts up to 200 records per request
+        int batchSize = 200; 
+        List<List<SalesforceRecord>> batches = Lists.partition(allRecords, batchSize);
+
+        // Map each batch to a task that calls your EXISTING service
+        List<Callable<List<SyncResult>>> tasks = batches.stream()
+                .map(batch -> (Callable<List<SyncResult>>) () -> salesforceService.pushBatchToSalesforce(batch))
+                .toList();
+
+        List<SyncResult> finalResults = new ArrayList<>();
+
+        // Spin up the virtual threads and execute
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            
+            // This blocks the orchestrator thread until all Salesforce API calls return
+            List<Future<List<SyncResult>>> futures = executor.invokeAll(tasks);
+
+            // Collect the results from the Futures
+            for (Future<List<SyncResult>> future : futures) {
+                finalResults.addAll(future.get());
+            }
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Parallel processing was interrupted", e);
+        } catch (Exception e) {
+            throw new RuntimeException("Error fetching results from virtual threads", e);
+        }
+
+        return finalResults;
+    }
+}
+
+Why this architecture shines:
+ * Separation of Concerns: SalesforceIntegrationService is strictly focused on HTTP headers, payloads, and API contracts. VirtualThreadOrchestratorService is strictly focused on concurrency and aggregation.
+ * Easy Profiling: When looking at logs or traces, you will clearly see the orchestrator thread waiting, while the worker-X virtual threads are busy executing the SalesforceIntegrationService methods.
+ * Safe I/O Yielding: Because the actual HTTP call happens inside pushBatchToSalesforce, the moment that method waits for the Salesforce server to respond, the JVM automatically unmounts that specific virtual thread, freeing up system resources.
+Would you like to look at how to implement a timeout on the executor.invokeAll() method, just in case Salesforce experiences a severe degradation and hangs the API calls?
+
