@@ -1,0 +1,70 @@
+List<Callable<List<SyncResult>>> tasks = batches.stream()
+                .map(batch -> (Callable<List<SyncResult>>) () -> salesforceService.pushBatchToSalesforce(batch))
+                .toList();
+
+Please simplify this ?
+
+
+
+
+
+To explain this without a lambda, we have to look at what Java is doing "under the hood."
+A Lambda is just a shorthand way of creating an Anonymous Inner Class. Before lambdas existed (pre-Java 8), we had to write out the full class definition every time we wanted to pass a "task" to a thread.
+1. The "Manual" Way (Creating a Task Class)
+To avoid the lambda, we create a small class that implements the Callable interface. This class "holds" the data (the batch) until a thread is ready to process it.
+// This is what the Lambda was doing for you automatically
+
+class SalesforceTask implements Callable<List<SyncResult>> {
+    private final List<SalesforceRecord> batch;
+    private final SalesforceIntegrationService service;
+
+    // Constructor to "capture" the data and the service
+    public SalesforceTask(List<SalesforceRecord> batch, SalesforceIntegrationService service) {
+        this.batch = batch;
+        this.service = service;
+    }
+
+    @Override
+    public List<SyncResult> call() throws Exception {
+        // This is the actual work that will run inside the Virtual Thread
+        return service.pushBatchToSalesforce(batch);
+    }
+}
+
+2. The Simplified "Orchestrator" (Without Streams or Lambdas)
+Now, instead of that complex .stream().map(...) line, we use a simple for loop to create these task objects.
+public List<SyncResult> processInParallel(List<SalesforceRecord> allRecords) {
+    // 1. Partition the data using Guava
+    List<List<SalesforceRecord>> batches = Lists.partition(allRecords, 200);
+
+    // 2. Create a list to hold our "Tasks"
+    List<Callable<List<SyncResult>>> tasks = new ArrayList<>();
+
+    // 3. Loop through batches and create a new Task object for each one
+    for (List<SalesforceRecord> batch : batches) {
+        // We create an instance of our class and pass in the data
+        SalesforceTask task = new SalesforceTask(batch, this.salesforceService);
+        tasks.add(task);
+    }
+
+    // 4. Hand the list of tasks to the Virtual Thread Executor
+    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+        List<Future<List<SyncResult>>> futures = executor.invokeAll(tasks);
+        
+        // ... gather results from futures as before ...
+    } catch (Exception e) {
+        throw new RuntimeException(e);
+    }
+}
+
+Why the Lambda is usually preferred
+When you see batch -> () -> service.push(batch), Java is essentially doing all that "Class," "Constructor," and "Override" boilerplate for you behind the scenes.
+ * The Lambda version: Focuses on what to do (service.push(batch)).
+ * The Class version: Focuses on how to build the object to hold the data.
+Summary of the Flow
+ * The Batch: You have the data.
+ * The Task (Callable): You wrap the data and the instruction into a "package."
+ * The Executor: You give the "package" to a Virtual Thread.
+ * The Future: The Executor gives you a receipt (the Future) while it works.
+Would you like me to show you how to properly extract the results from that List<Future> using a simple loop?
+
