@@ -1,0 +1,41 @@
+In Java, an ExecutorService is a framework that manages a pool of threads and a queue of tasks. Instead of you manually calling new Thread().start(), the executor decides when and how to run your tasks.
+With the arrival of Java 21, these executors are now divided into two main categories: Thread-Pooling (Old/Standard) and Thread-Per-Task (New/Virtual).
+1. The Virtual Thread Executor (The New Standard)
+This is the one we used for your Salesforce project. It does not "pool" threads because virtual threads are disposable.
+ * Executors.newVirtualThreadPerTaskExecutor()
+   * How it works: For every task you submit, it creates a brand-new virtual thread.
+   * Best for: I/O-bound tasks (API calls, DB queries).
+   * Resource usage: Extremely low memory; can handle millions of concurrent tasks.
+2. Fixed Thread Pool (The "Workhorse")
+ * Executors.newFixedThreadPool(nThreads)
+   * How it works: It creates a set number of Platform (OS) threads. If all threads are busy, new tasks wait in a queue.
+   * Best for: CPU-bound tasks (Complex math, image processing, sorting large lists).
+   * Resource usage: High. Each thread takes ~1MB of memory.
+3. Cached Thread Pool (The "Elastic" Pool)
+ * Executors.newCachedThreadPool()
+   * How it works: It creates new threads as needed but reuses old ones that have finished. If a thread is idle for 60 seconds, it is terminated.
+   * Best for: Many short-lived tasks where you don't know the volume in advance.
+   * Danger: If you submit 100,000 tasks at once, it will try to create 100,000 OS threads and likely crash your server.
+4. Single Thread Executor (The "Ordered" Worker)
+ * Executors.newSingleThreadExecutor()
+   * How it works: Uses exactly one thread. Tasks are guaranteed to execute one after another (FIFO).
+   * Best for: Sequential processing where you must ensure Task A finishes before Task B starts (e.g., writing to a specific log file).
+5. Scheduled Executor (The "Timer")
+ * Executors.newScheduledThreadPool(nThreads)
+   * How it works: Allows you to delay a task or run it periodically (e.g., every 5 minutes).
+   * Best for: Heartbeats, cleaning up temp files, or polling a status every few seconds.
+Comparison Table: Which one should you pick?
+| Scenario | Recommended Executor | Thread Type |
+|---|---|---|
+| Salesforce/API Calls | newVirtualThreadPerTaskExecutor | Virtual |
+| Database Heavy I/O | newVirtualThreadPerTaskExecutor | Virtual |
+| Video Encoding / Math | newFixedThreadPool(CPU_CORES) | Platform |
+| Background Cron Job | newScheduledThreadPool | Platform |
+| Sequential File Write | newSingleThreadExecutor | Platform |
+Pro Tip for your Orchestrator
+When you used the try-with-resources block earlier:
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    // tasks here
+}
+
+
