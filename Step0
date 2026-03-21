@@ -1,0 +1,39 @@
+To master Virtual Threads (Project Loom), you need to move beyond simple syntax and understand how they fundamentally change the economics of Java concurrency.
+This plan is structured to take you from a "Thread-per-Request" mindset to a "Million-Threads-per-App" architecture.
+Phase 1: The Mechanical Mental Model
+Before writing code, you must understand the M:N scheduling model.
+ * The "Carrier" Thread: This is the underlying OS/Platform thread (the "M").
+ * The "Virtual" Thread: This is the lightweight JVM-managed thread (the "N").
+ * Continuations: Learn how the JVM "pauses" a virtual thread’s stack and "unmounts" it from the carrier thread during I/O, then "mounts" it back when the I/O is done.
+> Mastery Goal: Explain to a peer exactly why a virtual thread waiting for a database response doesn't consume any CPU or OS thread resources.
+> 
+Phase 2: Core API & Lifecycle Management
+Stop using new Thread() and start using the builders and modern executors.
+ * Thread Builders: Practice using Thread.ofVirtual().name("worker-", 0).start(runnable).
+ * The New Executor: Master Executors.newVirtualThreadPerTaskExecutor().
+ * Scoping: Learn the try-with-resources pattern with executors. In Java 21, ExecutorService implements AutoCloseable, meaning the code waits for all threads to finish before exiting the block.
+Phase 3: The "Unlearning" Curve (The Hard Part)
+Mastery requires breaking old habits that were necessary for heavy OS threads.
+ * Stop Pooling: Virtual threads are like strings; they are cheap and disposable. You should never pool them. If you need to limit concurrency (e.g., only 50 database connections), use a Semaphore, not a fixed thread pool.
+ * Eliminate Pinning: Learn to identify "Thread Pinning." This happens when a virtual thread is stuck on a carrier thread because it’s inside a synchronized block or calling a native method.
+   * Action: Practice refactoring synchronized blocks into java.util.concurrent.locks.ReentrantLock.
+Phase 4: Framework & Database Integration
+This is where the theory meets enterprise production.
+ * Spring Boot 3.2+: Enable spring.threads.virtual.enabled=true and observe how Tomcat and @Async tasks change.
+ * Database Connectivity: High concurrency puts immense pressure on connection pools (like HikariCP). Learn to tune pool sizes and understand that while you have 10,000 threads, you still only have X database connections.
+ * High-Volume Processing: Experiment with using virtual threads inside Spring Batch TaskExecutor implementations to see how it affects chunk processing speed.
+Phase 5: Observability & Diagnostics
+A thread dump with 100,000 threads is a nightmare. You need new tools.
+ * JDK Flight Recorder (JFR): Learn to use JFR to find "Pinning" events (jdk.VirtualThreadPinned).
+ * The New Thread Dump: Practice using jcmd <pid> Thread.dump_to_file -format=json to analyze thread states.
+ * Memory Footprint: Monitor the Heap memory. While virtual threads are light, their stacks live on the Heap, not the OS stack memory.
+Summary Table: Old vs. New
+| Feature | Platform Threads (Old) | Virtual Threads (New) |
+|---|---|---|
+| Creation Cost | Expensive (approx. 1MB/thread) | Negligible (approx. 1KB/thread) |
+| Limit | Thousands | Millions |
+| Strategy | Thread Pooling | New Thread Per Task |
+| I/O Handling | Blocks the OS Thread | Yields the OS Thread |
+| Synchronization | synchronized is fine | Prefer ReentrantLock |
+Would you like me to generate a specific "Pinning Detector" exercise to help you practice identifying and fixing code that blocks carrier threads?
+
