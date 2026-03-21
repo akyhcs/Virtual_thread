@@ -1,0 +1,68 @@
+Think of a Callable as a Runnable that can "talk back."
+While a Runnable just performs a task and finishes (like a fire-and-forget mission), a Callable performs a task and returns a result or throws an exception.
+The Core Difference
+| Feature | Runnable | Callable |
+|---|---|---|
+| Method | run() | call() |
+| Return Value | void (Nothing) | V (Any object you specify) |
+| Exceptions | Cannot throw checked exceptions | Can throw checked exceptions |
+1. A Basic Callable Example
+Imagine you want a thread to calculate the sum of a list of numbers and give you the answer.
+import java.util.concurrent.Callable;
+
+// This Callable returns an Integer
+Callable<Integer> sumTask = () -> {
+    int sum = 0;
+    for (int i = 1; i <= 10; i++) {
+        sum += i;
+    }
+    return sum; // The "Result"
+};
+
+2. Using Callable with Virtual Threads
+When you submit a Callable to an executor, it doesn't give you the result immediately (because the thread is still working). Instead, it gives you a Future. Think of a Future as a "claim check" for a result that will be ready soon.
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
+public class CallableExample {
+    public static void main(String[] args) throws Exception {
+        
+        // Define the task: Go fetch a person's name from a database
+        Callable<String> fetchNameTask = () -> {
+            Thread.sleep(1000); // Simulate network delay
+            return "John Doe";
+        };
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            // Submit returns a Future (the claim check)
+            Future<String> claimCheck = executor.submit(fetchNameTask);
+
+            System.out.println("Doing other work while the thread fetches the name...");
+
+            // .get() blocks the main thread until the virtual thread is done
+            String result = claimCheck.get(); 
+            System.out.println("Result received: " + result);
+        }
+    }
+}
+
+3. How it fits your Salesforce scenario
+In your case, your Callable is the bridge between your Orchestrator and your Existing Service.
+// 1. You define WHAT you want to happen inside the thread
+Callable<List<SyncResult>> task = () -> {
+    // This calls your existing service and RETURNS the list it produces
+    return salesforceService.pushBatchToSalesforce(myBatch);
+};
+
+// 2. You submit it to the virtual thread executor
+Future<List<SyncResult>> future = executor.submit(task);
+
+// 3. Later, you collect the result
+List<SyncResult> results = future.get();
+
+Why use Callable instead of Runnable?
+ * Error Handling: If your Salesforce service throws an ApiException, a Callable will capture it. When you call future.get(), it will throw an ExecutionException, allowing you to handle the error in your main thread.
+ * Data Flow: It is much cleaner to "return" data from a thread than to try and "write" data to a shared list from 50 different threads at once.
+Would you like me to show you how to handle multiple Future objects at once if you submit 10 different batches?
+
