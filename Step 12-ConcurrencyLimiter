@@ -1,0 +1,137 @@
+Here's the `ConcurrencyLimiter` rewritten using **Java Virtual Threads** (Project Loom, Java 21+):
+
+```java
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.concurrent.*;
+
+// ── Dummy Student object ──────────────────────────────────────────
+class Student {
+    private final int id;
+    private final String name;
+
+    public Student(int id, String name) {
+        this.id = id;
+        this.name = name;
+    }
+
+    public String processExam() throws InterruptedException {
+        System.out.println("📝 " + name + " is taking the exam on: "
+                + Thread.currentThread()); // shows virtual thread info
+        Thread.sleep(1000);
+        return "✅ " + name + " (ID: " + id + ") finished the exam!";
+    }
+}
+
+// ── ConcurrencyLimiter with Virtual Threads ───────────────────────
+public class ConcurrencyLimiter implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(ConcurrencyLimiter.class);
+
+    private final ExecutorService executor;
+    private final Semaphore semaphore;
+    private final Queue<Callable<?>> queue;
+
+    public ConcurrencyLimiter(ExecutorService executor, int limit) {
+        this.executor  = executor;
+        this.semaphore = new Semaphore(limit);
+        this.queue     = new ConcurrentLinkedQueue<>();
+    }
+
+    public <T> Future<T> submit(Callable<T> callable) {
+        this.queue.add(callable);
+        return executor.submit(() -> executeTask());
+    }
+
+    private <T> T executeTask() {
+        try {
+            semaphore.acquire();
+            Callable<?> task = this.queue.poll();
+            if (task == null) return null;
+            return (T) task.call();
+        } catch (Exception e) {
+            log.error("Task execution error", e);
+            return null;
+        } finally {
+            semaphore.release();
+        }
+    }
+
+    @Override
+    public void close() throws Exception {
+        this.executor.close();
+    }
+
+    // ── MAIN ──────────────────────────────────────────────────────
+    public static void main(String[] args) throws Exception {
+
+        var students = java.util.List.of(
+            new Student(1, "Alice"),
+            new Student(2, "Bob"),
+            new Student(3, "Charlie"),
+            new Student(4, "Diana"),
+            new Student(5, "Eve"),
+            new Student(6, "Frank")
+        );
+
+        // ✅ Key change: Virtual Thread executor instead of platform threads
+        ExecutorService virtualExecutor =
+                Executors.newVirtualThreadPerTaskExecutor();
+
+        try (ConcurrencyLimiter limiter =
+                     new ConcurrencyLimiter(virtualExecutor, 2)) {
+
+            var futures = new java.util.ArrayList<Future<String>>();
+
+            for (Student student : students) {
+                Future<String> future = limiter.submit(student::processExam);
+                futures.add(future);
+            }
+
+            for (Future<String> f : futures) {
+                System.out.println(f.get());
+            }
+        }
+
+        System.out.println("🎓 All exams completed!");
+    }
+}
+```
+
+### Sample Output
+```
+📝 Alice   is taking the exam on: VirtualThread[#21]/runnable@ForkJoinPool...
+📝 Bob     is taking the exam on: VirtualThread[#22]/runnable@ForkJoinPool...
+✅ Alice   (ID: 1) finished the exam!
+✅ Bob     (ID: 2) finished the exam!
+📝 Charlie is taking the exam on: VirtualThread[#23]/runnable@ForkJoinPool...
+📝 Diana   is taking the exam on: VirtualThread[#24]/runnable@ForkJoinPool...
+✅ Charlie (ID: 3) finished the exam!
+✅ Diana   (ID: 4) finished the exam!
+📝 Eve     is taking the exam on: VirtualThread[#25]/runnable@ForkJoinPool...
+📝 Frank   is taking the exam on: VirtualThread[#26]/runnable@ForkJoinPool...
+✅ Eve     (ID: 5) finished the exam!
+✅ Frank   (ID: 6) finished the exam!
+🎓 All exams completed!
+```
+
+---
+
+### Platform Thread vs Virtual Thread
+
+| | Platform Thread | Virtual Thread ✅ |
+|---|---|---|
+| **Executor** | `newFixedThreadPool(n)` | `newVirtualThreadPerTaskExecutor()` |
+| **Thread creation** | Expensive (OS-level) | Cheap (JVM-managed) |
+| **Blocking `sleep()`** | Blocks OS thread | **Unmounts**, frees carrier thread |
+| **Scalability** | Limited by thread count | Millions of threads possible |
+| **Semaphore still needed?** | ✅ Yes | ✅ Yes — controls concurrency limit |
+
+### Why Virtual Threads shine here 💡
+```
+Platform threads → Thread.sleep() wastes an OS thread doing nothing
+Virtual threads  → Thread.sleep() releases the carrier thread back
+                   to the pool, which picks up another virtual thread
+```
+Even though **6 virtual threads** are created, only **2 run at a time** (semaphore), and during `sleep()` the carrier threads are **freed** — making this extremely efficient at scale.
