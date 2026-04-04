@@ -134,4 +134,91 @@ Platform threads → Thread.sleep() wastes an OS thread doing nothing
 Virtual threads  → Thread.sleep() releases the carrier thread back
                    to the pool, which picks up another virtual thread
 ```
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 Even though **6 virtual threads** are created, only **2 run at a time** (semaphore), and during `sleep()` the carrier threads are **freed** — making this extremely efficient at scale.
+Great question! Here's the concern:
+
+## The Problem 🚩
+
+```java
+private <T> T executeTask() {
+    try {
+        semaphore.acquire();        // ← Virtual thread BLOCKS here
+        ...
+    }
+}
+```
+
+When a virtual thread calls `semaphore.acquire()` and the semaphore is **not available**, it **blocks** — but the question is:
+
+> *Does blocking on a Semaphore unmount the virtual thread like `Thread.sleep()` does?*
+
+---
+
+## The Good News ✅
+
+**Yes! Semaphore IS virtual-thread friendly.**
+
+`Semaphore` internally uses `AbstractQueuedSynchronizer (AQS)`, which calls `LockSupport.park()` when blocking.
+
+```
+semaphore.acquire()
+    └── AQS.acquireSharedInterruptibly()
+            └── LockSupport.park()   ← Virtual thread UNMOUNTS here
+                                       Carrier thread is FREED ✅
+```
+
+So the virtual thread **unmounts from its carrier thread** while waiting — the carrier thread is free to run other virtual threads. 🎉
+
+---
+
+## Full Flow Visualized
+
+```
+6 Students submitted → 6 Virtual Threads created (cheap!)
+
+Virtual Thread 1 (Alice)   → acquire() → semaphore=1 → runs ✅
+Virtual Thread 2 (Bob)     → acquire() → semaphore=2 → runs ✅
+Virtual Thread 3 (Charlie) → acquire() → semaphore FULL → parks 🅿️
+                                          carrier thread FREED ✅
+Virtual Thread 4 (Diana)   → acquire() → semaphore FULL → parks 🅿️
+                                          carrier thread FREED ✅
+
+Alice finishes → release() → Charlie UNPARKS → runs ✅
+Bob   finishes → release() → Diana   UNPARKS → runs ✅
+```
+
+---
+
+## ⚠️ One Real Warning: Pinning
+
+```java
+// ❌ BAD — This PINS the virtual thread (carrier thread NOT freed)
+synchronized (lock) {
+    semaphore.acquire();   // blocks inside synchronized = PINNED
+}
+
+// ✅ GOOD — Use ReentrantLock instead
+ReentrantLock lock = new ReentrantLock();
+lock.lock();
+try {
+    semaphore.acquire();   // safe, unmounts properly
+} finally {
+    lock.unlock();
+}
+```
+
+If `semaphore.acquire()` is called **inside a `synchronized` block**, the virtual thread gets **pinned** to its carrier thread — defeating the purpose of virtual threads.
+
+---
+
+## Summary
+
+| Scenario | Carrier Thread Freed? |
+|---|---|
+| `semaphore.acquire()` waiting | ✅ Yes — unmounts via `LockSupport.park()` |
+| `Thread.sleep()` waiting | ✅ Yes |
+| `synchronized` block blocking | ❌ No — **pinned** |
+| `ReentrantLock` blocking | ✅ Yes |
+
+So your `ConcurrencyLimiter` with `Semaphore` + Virtual Threads is **correctly efficient** as written! 🚀
