@@ -1,0 +1,71 @@
+Here's a similar `CompletableFuture` example using a `Student` object:
+
+```java
+import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+// Student record
+record Student(int id, String name, String grade) {}
+
+public class StudentCompletableFuture {
+
+    private static final Logger log = LoggerFactory.getLogger(StudentCompletableFuture.class);
+
+    public static void main(String[] args) {
+        log.info("main starts");
+
+        var cf = fetchStudentFromDB(101);
+        cf.thenAccept(student -> 
+            log.info("Student received => id={}, name={}, grade={}", 
+                student.id(), student.name(), student.grade())
+        );
+
+        log.info("main ends");
+        CommonUtils.sleep(Duration.ofSeconds(3));
+    }
+
+    // Simulates an instant/cached student lookup
+    private static CompletableFuture<Student> fetchStudentFromCache(int id) {
+        log.info("fetchStudentFromCache starts");
+        var cf = new CompletableFuture<Student>();
+        cf.complete(new Student(id, "Alice", "A"));
+        log.info("fetchStudentFromCache ends");
+        return cf;
+    }
+
+    // Simulates a slow DB call using a virtual thread
+    private static CompletableFuture<Student> fetchStudentFromDB(int id) {
+        log.info("fetchStudentFromDB starts");
+        var cf = new CompletableFuture<Student>();
+        Thread.ofVirtual().start(() -> {
+            log.info("Fetching student from DB...");
+            CommonUtils.sleep(Duration.ofSeconds(2)); // simulate DB delay
+            cf.complete(new Student(id, "Bob", "B+"));
+            log.info("DB fetch complete");
+        });
+        log.info("fetchStudentFromDB ends");
+        return cf;
+    }
+}
+```
+
+**Expected Output:**
+```
+main starts
+fetchStudentFromDB starts
+fetchStudentFromDB ends
+main ends
+Fetching student from DB...       ← happens in virtual thread
+DB fetch complete
+Student received => id=101, name=Bob, grade=B+
+```
+
+**Key differences from the original:**
+- `String` is replaced with a `Student` record containing `id`, `name`, and `grade`
+- Two methods show a **cache hit** (instant) vs **DB fetch** (slow/async)
+- The `thenAccept` callback now logs all student fields
+- Uses Java 16+ `record` for clean, immutable data modeling
+
+Requires **Java 21+** and the same `CommonUtils` and SLF4J setup as before.
