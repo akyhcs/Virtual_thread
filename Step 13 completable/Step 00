@@ -1,0 +1,33 @@
+Yes, this is absolutely valid Java code — and works in Java 21. The slide shows two equivalent approaches to the same async operation using `CompletableFuture`.
+
+**Left side (CompletableFuture chain):**
+```java
+getUsernameFromRemoteService()
+    .thenApply(name -> "HELLO " + name.toUpperCase())
+    .exceptionally(ex -> "Hey User..!")
+    .orTimeout(1, TimeUnit.SECONDS)
+    .exceptionally(ex -> "Oops..the service is slow")
+    .thenApply(s -> s + " - " + LocalTime.now())
+```
+
+**Right side (imperative equivalent):**
+```java
+String result;
+try {
+    String name = getUsernameFromRemoteService().get(1, TimeUnit.SECONDS);
+    result = "HELLO " + name.toUpperCase();
+} catch (InterruptedException | ExecutionException e) {
+    result = "Hey User..!";
+} catch (TimeoutException e) {
+    result = "Oops..the service is slow";
+}
+return result + " - " + LocalTime.now();
+```
+
+**A few notes for Java 21 specifically:**
+
+- `CompletableFuture`, `orTimeout()`, and `exceptionally()` are all fully supported — `orTimeout()` was added in Java 9, so it's been stable for a while.
+- In Java 21, you might prefer **Virtual Threads** (now stable via Project Loom) for the imperative style — the blocking `.get()` call on the right becomes much cheaper when run on a virtual thread.
+- The chained style on the left is non-blocking and still a great fit for reactive/async pipelines.
+
+Both approaches are valid — the left is more idiomatic for async code, while the right is easier to read and debug, especially with virtual threads in Java 21.
