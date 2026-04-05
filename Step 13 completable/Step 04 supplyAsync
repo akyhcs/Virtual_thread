@@ -1,0 +1,99 @@
+Here are examples for `supplyAsync()`:
+
+**Basic usage — fetch a value asynchronously:**
+```java
+CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
+    return "Hello from async task";
+});
+
+String result = future.get(); // blocks until done
+System.out.println(result);  // Hello from async task
+```
+
+---
+
+**With a custom Executor (thread pool):**
+```java
+ExecutorService executor = Executors.newFixedThreadPool(4);
+
+CompletableFuture<Integer> future = CompletableFuture.supplyAsync(() -> {
+    return 42;
+}, executor);
+
+executor.shutdown();
+```
+
+---
+
+**Chained with `thenApply()` to transform the result:**
+```java
+CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> "hello")
+    .thenApply(String::toUpperCase);
+
+System.out.println(future.get()); // HELLO
+```
+
+---
+
+**With exception handling via `exceptionally()`:**
+```java
+CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
+    if (true) throw new RuntimeException("Something went wrong");
+    return "OK";
+}).exceptionally(ex -> "Fallback: " + ex.getMessage());
+
+System.out.println(future.get()); // Fallback: Something went wrong
+```
+
+---
+
+**Key points:**
+- Runs on the common `ForkJoinPool` by default (unless you pass an `Executor`)
+- The supplier **cannot** throw checked exceptions — wrap them in a `RuntimeException`
+- Use `.get()` or `.join()` to retrieve the result; `.join()` avoids checked exceptions
+
+
+Yes, exactly. `.get()` is a **blocking call** — the current thread freezes at that line until the async task finishes. Everything below it waits.
+
+```java
+CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
+    // simulating slow task
+    Thread.sleep(5000);
+    return "done";
+});
+
+String result = future.get(); // ← thread BLOCKS here for 5 seconds
+
+// these 1000 lines won't run until the future completes
+line1();
+line2();
+...
+```
+
+---
+
+**To avoid blocking, use `thenApply()` or `thenAccept()` instead:**
+
+```java
+CompletableFuture.supplyAsync(() -> "done")
+    .thenAccept(result -> System.out.println("Got: " + result));
+
+// these lines run immediately, no waiting
+line1();
+line2();
+```
+
+Now the 1000 lines execute right away, and the callback fires whenever the result is ready — on a separate thread.
+
+---
+
+**Quick comparison:**
+
+| Approach | Blocks? | Use when |
+|---|---|---|
+| `.get()` | ✅ Yes | You need the result before continuing |
+| `.join()` | ✅ Yes | Same as get, no checked exception |
+| `.thenApply()` | ❌ No | You want to transform and continue |
+| `.thenAccept()` | ❌ No | You want to consume and continue |
+
+So if you don't *need* the result right there, always prefer the non-blocking chaining methods.
