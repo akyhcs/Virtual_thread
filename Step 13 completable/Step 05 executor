@@ -1,0 +1,56 @@
+You're referring to this from the earlier example:
+
+```java
+ExecutorService executor = Executors.newFixedThreadPool(4);
+
+CompletableFuture<Integer> future = CompletableFuture.supplyAsync(() -> {
+    return 42;
+}, executor);
+
+executor.shutdown();
+```
+
+---
+
+**The problem here** — `executor.shutdown()` is called immediately after submitting the task, before it even finishes. This works *by chance* because `shutdown()` doesn't kill running tasks, it just stops accepting new ones.
+
+But it's misleading and risky. Better pattern:
+
+```java
+ExecutorService executor = Executors.newFixedThreadPool(4);
+
+CompletableFuture<Integer> future = CompletableFuture.supplyAsync(() -> {
+    return 42;
+}, executor);
+
+future.thenAccept(result -> System.out.println("Result: " + result))
+      .whenComplete((v, ex) -> executor.shutdown()); // shutdown AFTER task is done
+```
+
+---
+
+**Why use a custom Executor at all?**
+
+By default `supplyAsync()` uses `ForkJoinPool.commonPool()` which is shared across your entire application.
+
+| | `ForkJoinPool` (default) | Custom Executor |
+|---|---|---|
+| Shared across app | ✅ Yes | ❌ No, isolated |
+| Good for CPU tasks | ✅ Yes | ⚠️ Depends |
+| Good for blocking I/O (API calls) | ❌ No | ✅ Yes |
+| Control over thread count | ❌ No | ✅ Yes |
+
+**Your API call scenario is a perfect case for a custom executor** — because API calls are blocking I/O, and tying up the common pool threads with blocking calls starves the rest of your app.
+
+```java
+// Dedicated thread pool for API calls
+ExecutorService apiExecutor = Executors.newFixedThreadPool(10);
+
+CompletableFuture.supplyAsync(() -> apiClient.fetchRecord(), apiExecutor)
+    .thenApply(record -> transformer.toLocalDto(record))
+    .thenApply(dto -> repository.save(dto))
+    .thenApply(saved -> apiClient.acknowledge(saved.getId()))
+    .whenComplete((v, ex) -> apiExecutor.shutdown());
+```
+
+This keeps your API threads isolated and your common pool free for CPU work.
