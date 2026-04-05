@@ -1,0 +1,53 @@
+Yes! Virtual threads (Java 21+) and `CompletableFuture` complement each other very well.
+
+---
+
+**The problem virtual threads solve here:**
+
+With traditional threads, blocking I/O (like your API call) **holds the OS thread hostage**:
+
+```
+API call waiting... [OS thread stuck for 2 seconds doing nothing]
+```
+
+Virtual threads are **cheap** — JVM can create millions of them. When one blocks, it **unmounts** from the OS thread and lets others run.
+
+---
+
+**Combining both — just plug virtual threads as the Executor:**
+
+```java
+ExecutorService virtualExecutor = Executors.newVirtualThreadPerTaskExecutor();
+
+CompletableFuture.supplyAsync(() -> apiClient.fetchRecord(), virtualExecutor)
+    .thenApplyAsync(record -> transformer.toLocalDto(record), virtualExecutor)
+    .thenApplyAsync(dto -> repository.save(dto), virtualExecutor)
+    .thenApplyAsync(saved -> apiClient.acknowledge(saved.getId()), virtualExecutor)
+    .whenComplete((v, ex) -> virtualExecutor.shutdown());
+```
+
+Notice `thenApplyAsync()` instead of `thenApply()` — this ensures each step also runs on the virtual thread executor, not the common pool.
+
+---
+
+**Comparison:**
+
+| | Platform Threads + CF | Virtual Threads + CF |
+|---|---|---|
+| Blocking I/O cost | High — thread is stuck | Low — thread unmounts |
+| Thread count limit | ~thousands | Millions |
+| Code change needed | Big refactor | Just swap Executor |
+| Good for API calls | ⚠️ Risky | ✅ Ideal |
+
+---
+
+**The key insight:**
+
+- `CompletableFuture` handles **what to do** and **in what order**
+- Virtual threads handle **how efficiently the waiting is managed**
+
+They don't replace each other — virtual threads make the blocking inside `supplyAsync()` essentially free, while `CompletableFuture` still gives you the chaining, error handling, and composition.
+
+---
+
+**For your specific use case** (fetch → transform → save → acknowledge), this is the ideal setup since every step involves I/O.
