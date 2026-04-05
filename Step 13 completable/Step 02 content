@@ -1,0 +1,11 @@
+| Method | Description |
+|---|---|
+| `supplyAsync()` | Run async task that returns a value |
+| `runAsync()` | Run async task with no return value |
+| `thenApply()` | Transform result (sync) |
+| `thenCompose()` | Chain dependent futures (flatMap) |
+| `thenCombine()` | Combine two independent futures |
+| `allOf()` | Wait for all futures to complete |
+| `anyOf()` | Complete when any future completes |
+| `exceptionally()` | Handle exceptions with fallback |
+| `handle()` | Handle both result and exception |
