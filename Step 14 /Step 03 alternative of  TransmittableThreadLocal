@@ -1,0 +1,103 @@
+Good question. Yes, Google's **Guava** library has a concept but it's **not a direct 1:1 substitute**. Let me be honest about what exists.
+
+---
+
+## Short Answer
+There is **no direct Google/Guava equivalent** to `TransmittableThreadLocal`. Guava does not have a class that automatically propagates ThreadLocal values across thread pools.
+
+---
+
+## What Guava Offers Instead
+
+### `MoreExecutors` — Context propagating executors
+Guava doesn't propagate ThreadLocal, but it provides executor wrappers for other concerns:
+
+```xml
+<dependency>
+    <groupId>com.google.guava</groupId>
+    <artifactId>guava</artifactId>
+    <version>32.1.3-jre</version>
+</dependency>
+```
+
+```java
+// Guava's ListeningExecutorService — better Future handling
+// but does NOT propagate ThreadLocal
+ListeningExecutorService executor =
+    MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(5));
+```
+
+---
+
+## Real Alternatives to Alibaba TTL
+
+| Library | Group | Propagates ThreadLocal to pools |
+|---|---|---|
+| `transmittable-thread-local` | com.alibaba | ✅ |
+| `context-propagation` | `io.micrometer` | ✅ |
+| `Slf4j MDC` | org.slf4j | ⚠️ partial |
+| Guava | com.google.guava | ❌ |
+
+---
+
+## Best Substitute — Micrometer Context Propagation
+
+This is the **most production-grade alternative**, used by Spring Boot 3+ internally:
+
+```xml
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>context-propagation</artifactId>
+    <version>1.1.1</version>
+</dependency>
+```
+
+```java
+// Register your ThreadLocal as a context value
+ContextRegistry.getInstance()
+    .registerThreadLocalAccessor(
+        "userId",                        // key
+        userIdThreadLocal::get,          // reader
+        userIdThreadLocal::set,          // writer
+        userIdThreadLocal::remove        // cleaner
+    );
+
+// Wrap your executor — context auto propagates
+ExecutorService executor = ContextExecutorService.wrap(
+    Executors.newFixedThreadPool(5)
+);
+
+userIdThreadLocal.set("user-123");
+
+executor.submit(() -> {
+    System.out.println(userIdThreadLocal.get()); // → "user-123" ✅
+});
+```
+
+---
+
+## Which Should You Pick?
+
+- **Spring Boot 3+ project** → use **Micrometer** (already bundled)
+- **Standalone / non-Spring** → use **Alibaba TTL** (simpler API)
+- **Guava only** → manually capture and pass context yourself
+
+---
+
+## Manual Guava Workaround (if you must stay pure Guava)
+
+```java
+// Capture context before submitting
+String capturedUser = userIdThreadLocal.get();
+
+executor.submit(() -> {
+    userIdThreadLocal.set(capturedUser); // manually restore
+    try {
+        // do work
+    } finally {
+        userIdThreadLocal.remove(); // always clean up
+    }
+});
+```
+
+Works but is **boilerplate-heavy** and easy to forget. Not recommended at scale.
