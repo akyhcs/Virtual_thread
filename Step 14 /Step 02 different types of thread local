@@ -1,0 +1,102 @@
+Great question. Java has **3 main variants** of ThreadLocal.
+
+---
+
+## 1. `ThreadLocal` — Standard
+The basic one. Each thread gets its own independent copy.
+
+```java
+ThreadLocal<String> local = new ThreadLocal<>();
+local.set("hello");
+local.get(); // → "hello" only in this thread
+```
+Use when: each thread needs **completely isolated** state.
+
+---
+
+## 2. `InheritableThreadLocal` — Parent to Child Inheritance
+When a child thread is spawned, it **inherits a copy** of the parent's value at the time of creation.
+
+```java
+InheritableThreadLocal<String> local = new InheritableThreadLocal<>();
+local.set("parent-value");
+
+Thread child = new Thread(() -> {
+    System.out.println(local.get()); // → "parent-value"
+    local.set("child-value");        // only changes child's copy
+    System.out.println(local.get()); // → "child-value"
+});
+child.start();
+
+System.out.println(local.get()); // → "parent-value" (parent unaffected)
+```
+
+**Gotcha:** Value is copied **at thread creation time**, not dynamically. If parent changes value after spawning, child won't see it.
+
+Use when: passing request context (user, traceId) from parent to child threads.
+
+---
+
+## 3. `TransmittableThreadLocal` (TTL) — Thread Pool Safe Inheritance
+A library (`com.alibaba:transmittable-thread-local`) that solves the biggest gap — `InheritableThreadLocal` **breaks with thread pools** because threads are reused, not freshly spawned.
+
+```xml
+<!-- pom.xml -->
+<dependency>
+    <groupId>com.alibaba</groupId>
+    <artifactId>transmittable-thread-local</artifactId>
+    <version>2.14.3</version>
+</dependency>
+```
+
+```java
+TransmittableThreadLocal<String> local = new TransmittableThreadLocal<>();
+local.set("request-123");
+
+ExecutorService executor = TtlExecutors.getTtlExecutorService(
+    Executors.newFixedThreadPool(5) // wrap your executor
+);
+
+executor.submit(() -> {
+    System.out.println(local.get()); // → "request-123" ✅
+});
+```
+
+Without TTL, a pooled thread would return `null` or worse, a **previous request's value**.
+
+Use when: propagating traceId, user context across thread pools in **microservices or async tasks**.
+
+---
+
+## Side by Side Comparison
+
+| | `ThreadLocal` | `InheritableThreadLocal` | `TransmittableThreadLocal` |
+|---|---|---|---|
+| Isolated per thread | ✅ | ✅ | ✅ |
+| Child inherits parent value | ❌ | ✅ | ✅ |
+| Works with thread pools | ✅ | ❌ | ✅ |
+| Built into JDK | ✅ | ✅ | ❌ (3rd party) |
+| Use case | Per-thread state | Spawned threads | Async / pooled tasks |
+
+---
+
+## Bonus — `ThreadLocal` with `withInitial`
+Not a separate type, but a cleaner way to define a default value lazily:
+
+```java
+// Instead of this:
+ThreadLocal<List<String>> local = new ThreadLocal<>();
+if (local.get() == null) local.set(new ArrayList<>());
+
+// Do this:
+ThreadLocal<List<String>> local = ThreadLocal.withInitial(ArrayList::new);
+// auto-initializes on first get() per thread
+```
+
+---
+
+**Which one should you use?**
+
+- Plain app with no async → **`ThreadLocal`**
+- Spawning raw threads and need context passed down → **`InheritableThreadLocal`**
+- Thread pools, Spring async, CompletableFuture → **`TransmittableThreadLocal`**
