@@ -1,0 +1,247 @@
+Great use case. Here's a complete example — reading 50k records at a time, distributing 10k per thread, using `ThreadLocal` to hold per-thread state like DB connections and batch accumulators.
+
+---
+
+**Core Design**
+- Read 50k records → split into 5 chunks of 10k
+- Submit each chunk to a thread pool
+- Each thread uses `ThreadLocal` for its own DB connection and reusable buffer
+
+---
+
+```java
+public class RecordProcessor {
+
+    private static final int BATCH_SIZE = 50_000;
+    private static final int CHUNK_SIZE = 10_000;
+    private static final int THREAD_COUNT = 5; // 50k / 10k
+
+    // Per-thread DB connection
+    private static final ThreadLocal<Connection> threadConnection =
+        ThreadLocal.withInitial(() -> {
+            try {
+                return DriverManager.getConnection("jdbc:mysql://localhost/db", "user", "pass");
+            } catch (SQLException e) {
+                throw new RuntimeException("Failed to create connection", e);
+            }
+        });
+
+    // Per-thread reusable result accumulator
+    private static final ThreadLocal<List<String>> threadResults =
+        ThreadLocal.withInitial(ArrayList::new);
+
+    private final ExecutorService executor = Executors.newFixedThreadPool(THREAD_COUNT);
+
+    public void processAll() throws Exception {
+        long totalRecords = getTotalCount();
+        long offset = 0;
+
+        while (offset < totalRecords) {
+            // Step 1: Read 50k records from DB
+            List<Record> batch = fetchRecords(offset, BATCH_SIZE);
+
+            // Step 2: Split into 5 chunks of 10k and submit
+            List<Future<Integer>> futures = new ArrayList<>();
+            for (int i = 0; i < batch.size(); i += CHUNK_SIZE) {
+                int end = Math.min(i + CHUNK_SIZE, batch.size());
+                List<Record> chunk = batch.subList(i, end);
+                futures.add(executor.submit(() -> processChunk(chunk)));
+            }
+
+            // Step 3: Wait for all threads to finish this batch
+            int totalProcessed = 0;
+            for (Future<Integer> future : futures) {
+                totalProcessed += future.get(); // blocks until done
+            }
+
+            System.out.println("Batch at offset " + offset + " processed: " + totalProcessed);
+            offset += BATCH_SIZE;
+        }
+
+        executor.shutdown();
+    }
+
+    private int processChunk(List<Record> chunk) {
+        Connection conn = threadConnection.get(); // per-thread connection
+        List<String> results = threadResults.get(); // per-thread buffer
+        results.clear(); // reuse — clear before each chunk
+
+        try {
+            conn.setAutoCommit(false);
+
+            for (Record record : chunk) {
+                String processed = transform(record);
+                results.add(processed);
+
+                // Flush every 1000 to avoid large memory buildup
+                if (results.size() >= 1000) {
+                    bulkInsert(conn, results);
+                    results.clear();
+                }
+            }
+
+            // Insert remaining
+            if (!results.isEmpty()) {
+                bulkInsert(conn, results);
+                results.clear();
+            }
+
+            conn.commit();
+            return chunk.size();
+
+        } catch (Exception e) {
+            rollback(conn);
+            throw new RuntimeException("Chunk processing failed", e);
+        }
+    }
+
+    private void bulkInsert(Connection conn, List<String> records) throws SQLException {
+        String sql = "INSERT INTO processed_records (data) VALUES (?)";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (String r : records) {
+                ps.setString(1, r);
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
+    private String transform(Record record) {
+        return record.getData().toUpperCase(); // your business logic here
+    }
+
+    private void rollback(Connection conn) {
+        try { conn.rollback(); } catch (SQLException ignored) {}
+    }
+
+    private List<Record> fetchRecords(long offset, int limit) throws SQLException {
+        // Read from DB with LIMIT/OFFSET
+        List<Record> records = new ArrayList<>();
+        String sql = "SELECT id, data FROM records LIMIT ? OFFSET ?";
+        try (PreparedStatement ps = threadConnection.get().prepareStatement(sql)) {
+            ps.setInt(1, limit);
+            ps.setLong(2, offset);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                records.add(new Record(rs.getLong("id"), rs.getString("data")));
+            }
+        }
+        return records;
+    }
+
+    private long getTotalCount() throws SQLException {
+        // simplified
+        return 1_000_000L;
+    }
+
+    // Cleanup — call when app shuts down
+    public void cleanup() {
+        try {
+            Connection conn = threadConnection.get();
+            if (conn != null && !conn.isClosed()) conn.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            threadConnection.remove();
+            threadResults.remove();
+        }
+    }
+}
+```
+
+---
+
+**Flow Summary**
+
+```
+Total: 1,000,000 records
+         │
+    Read 50k at a time (fetchRecords)
+         │
+    Split into 5 × 10k chunks
+         │
+   ┌─────┼─────┬─────┬─────┐
+Thread1 Thread2 Thread3 Thread4 Thread5
+   │       │      │      │      │
+ own DB  own DB  ...   ...   ...
+ conn    conn
+ own     own
+ buffer  buffer
+   │       │      │      │      │
+  bulkInsert every 1k rows
+   └─────┴─────┴─────┴─────┘
+         │
+    Wait (future.get())
+         │
+    Next 50k batch
+```
+
+---
+
+**What `ThreadLocal` gives you here**
+
+| | Without ThreadLocal | With ThreadLocal |
+|---|---|---|
+| DB connections | Shared → needs locking | 1 per thread, no contention |
+| Result buffer | New list per task | Reused across chunks |
+| Transaction scope | Complex coordination | Isolated per thread |
+
+---
+
+Want me to add error retry logic, a progress tracker, or show how to do this with virtual threads (Java 21)?
+
+
+Good question. Let me break it down.
+
+---
+
+**What's stored in it initially?**
+
+```java
+ThreadLocal.withInitial(ArrayList::new)
+```
+
+When a thread calls `threadResults.get()` for the **first time**, it creates a **fresh empty `ArrayList`**. Nothing is stored in it yet.
+
+---
+
+**So why call `results.clear()`?**
+
+Because this is a **thread pool** — threads are **reused** across chunks.
+
+The sequence looks like this:
+
+```
+Thread-1 processes Chunk-1  →  fills results  →  inserts  →  done
+Thread-1 picks up  Chunk-6  →  gets() same list  →  still has leftover data from Chunk-1!
+```
+
+So `clear()` is a **safety reset**, not discarding freshly read data. It ensures the previous chunk's leftover data doesn't bleed into the next chunk.
+
+---
+
+**The actual flow with `results`**
+
+```java
+List<String> results = threadResults.get();  // grab the thread's own list
+results.clear();                              // wipe any leftovers from last chunk
+
+for (Record record : chunk) {
+    results.add(transform(record));           // now fill it fresh
+
+    if (results.size() >= 1000) {
+        bulkInsert(conn, results);            // flush to DB
+        results.clear();                      // clear mid-chunk too
+    }
+}
+
+bulkInsert(conn, results);                   // flush remaining
+results.clear();                             // clean up after done
+```
+
+---
+
+**Why reuse instead of just `new ArrayList<>()` each time?**
+
+Because with millions of records, creating and garbage collecting a new list per chunk adds up. Reusing the same list object per thread avoids that allocation pressure entirely — that's the whole point of storing it in `ThreadLocal`.
+
