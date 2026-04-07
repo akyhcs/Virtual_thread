@@ -1,0 +1,67 @@
+**Java `ThreadLocal` Examples**
+
+---
+
+**1. User Context in a Web Request**
+```java
+public class RequestContext {
+    private static final ThreadLocal<String> currentUser = new ThreadLocal<>();
+
+    public static void setUser(String user) { currentUser.set(user); }
+    public static String getUser() { return currentUser.get(); }
+    public static void clear() { currentUser.remove(); } // call in finally block
+}
+
+// In a servlet filter:
+RequestContext.setUser(request.getHeader("X-User"));
+try {
+    chain.doFilter(request, response);
+} finally {
+    RequestContext.clear(); // prevent stale data in thread pool
+}
+```
+
+---
+
+**2. Per-Thread Database Connection**
+```java
+public class ConnectionHolder {
+    private static final ThreadLocal<Connection> connection =
+        ThreadLocal.withInitial(() -> DataSource.getConnection());
+
+    public static Connection get() { return connection.get(); }
+    public static void close() {
+        connection.get().close();
+        connection.remove();
+    }
+}
+```
+
+---
+
+**3. Per-Thread `SimpleDateFormat`** (classic use case — it's not thread-safe)
+```java
+private static final ThreadLocal<SimpleDateFormat> formatter =
+    ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
+
+public String formatDate(Date date) {
+    return formatter.get().format(date); // safe, each thread has its own instance
+}
+```
+
+---
+
+**4. Transaction ID Propagation**
+```java
+public class TransactionContext {
+    private static final ThreadLocal<String> txId = new ThreadLocal<>();
+
+    public static void begin() { txId.set(UUID.randomUUID().toString()); }
+    public static String getId() { return txId.get(); }
+    public static void end() { txId.remove(); }
+}
+```
+
+---
+
+**Key rule:** always call `.remove()` in a `finally` block when using thread pools (Tomcat, Spring, etc.) to avoid leaking state across requests.
