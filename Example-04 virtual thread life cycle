@@ -1,0 +1,179 @@
+Great question! Let me break down the full lifecycle.
+
+---
+
+**Platform thread vs Virtual thread structure:**
+
+```
+Platform Thread:
+┌─────────────────────────────────┐
+│  OS Thread (heavy, ~1MB stack)  │
+│  1:1 mapped to OS               │
+│  Blocking = OS thread stuck     │
+└─────────────────────────────────┘
+
+Virtual Thread:
+┌─────────────────────────────────┐
+│  Java Object (heap memory)      │
+│  Tiny stack (~few KB)           │
+│  Mounted on Platform thread     │
+└─────────────────────────────────┘
+```
+
+---
+
+**When virtual thread is created:**
+
+```
+Executors.newVirtualThreadPerTaskExecutor()
+         │
+         ▼
+JVM creates a plain Java Object in HEAP
+(just like any other object — very cheap)
+         │
+         ▼
+Assigned to a Carrier Thread (platform thread)
+(JVM maintains a small pool of carrier threads
+ = number of CPU cores typically)
+```
+
+---
+
+**What happens when it BLOCKS (e.g. your API call):**
+
+```
+Virtual Thread running on Carrier Thread
+         │
+         ▼
+semaphore.acquire() / apiClient.fetchRecord()
+         │
+         ▼
+JVM detects blocking call
+         │
+    ┌────┴────┐
+    │UNMOUNT  │  ← virtual thread's stack
+    │         │     saved back to HEAP as object
+    └────┬────┘
+         │
+         ▼
+Carrier Thread is NOW FREE
+picks up another virtual thread
+         │
+         ▼
+When blocking is done (API responds)
+virtual thread is REMOUNTED on
+any available carrier thread
+```
+
+---
+
+**Memory layout in heap:**
+
+```
+HEAP
+┌──────────────────────────────────────┐
+│  VirtualThread@1  [stack snapshot]   │ ← waiting for API
+│  VirtualThread@2  [stack snapshot]   │ ← waiting for DB
+│  VirtualThread@3  [stack snapshot]   │ ← waiting for semaphore
+│  VirtualThread@4  [running]          │ ← mounted on carrier
+│  VirtualThread@5  [running]          │ ← mounted on carrier
+│  ...1000 more objects...             │
+└──────────────────────────────────────┘
+
+CARRIER THREADS (only 8 — one per CPU core)
+┌────┐ ┌────┐ ┌────┐ ┌────┐
+│ C1 │ │ C2 │ │ C3 │ │ C4 │  ...
+└────┘ └────┘ └────┘ └────┘
+  ▲      ▲
+  │      │
+ VT4    VT5   (only 2 mounted at this moment)
+```
+
+---
+
+**Continuation — the real mechanism:**
+
+The virtual thread's stack is saved as a **Continuation object** in heap when unmounted:
+
+```java
+// Internally JVM does something like:
+class VirtualThread {
+    Continuation continuation;  // saved stack frames
+    Object blocker;             // what it's waiting on
+    State state;                // RUNNING / PARKED / BLOCKED
+}
+```
+
+When API responds → continuation is resumed from exact point it left off.
+
+---
+
+**Your API flow internally:**
+
+```
+VT created (heap object ~few KB)
+    │
+    ▼
+Mounted on Carrier Thread C1
+    │
+    ▼
+apiClient.fetchRecord() ← network call, will block
+    │
+    ▼
+JVM: "this is blocking, unmount"
+Stack saved to heap as Continuation
+C1 is FREE → picks up another VT
+    │
+    ▼
+API responds after 2 seconds
+    │
+    ▼
+Scheduler: remount this VT on C1 or C2 (whoever is free)
+Resume from exact line after fetchRecord()
+    │
+    ▼
+transformer.toLocalDto(record) ← runs
+    │
+    ▼
+repository.save(dto) ← blocks again → unmounts again
+    ... same cycle repeats
+```
+
+---
+
+**Key numbers to appreciate:**
+
+| | Platform Thread | Virtual Thread |
+|---|---|---|
+| Memory per thread | ~1MB | ~few KB |
+| Creation cost | High (OS call) | Low (heap object) |
+| Blocking cost | OS thread stuck | Just heap object parked |
+| Max practical count | ~thousands | Millions |
+| Who schedules | OS | JVM scheduler |
+
+---
+
+**One gotcha — Pinning:**
+
+Virtual thread gets **pinned** (stuck to carrier, cannot unmount) when:
+
+```java
+synchronized (lock) {
+    apiClient.fetchRecord(); // ← VT is PINNED here
+                             // carrier thread is blocked!
+}
+```
+
+Use `ReentrantLock` instead of `synchronized` to avoid pinning — this is why Semaphore (which uses `ReentrantLock` internally) is safe with virtual threads.
+
+```java
+// Bad with virtual threads
+synchronized(this) { ... }
+
+// Good with virtual threads
+ReentrantLock lock = new ReentrantLock();
+lock.lock();
+try { ... } finally { lock.unlock(); }
+```
+
+This is the complete lifecycle — virtual thread is just a **heap object with a saved stack**, being mounted and unmounted on a small pool of carrier threads by the JVM scheduler.
