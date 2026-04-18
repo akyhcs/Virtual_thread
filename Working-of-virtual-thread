@@ -1,0 +1,220 @@
+## Yes! Virtual Threads DO Run on CPU!
+
+This is a very common misconception. Let me clear it up.
+
+---
+
+## How Virtual Threads Actually Work
+
+Virtual threads are **not** magic — they still need CPU to execute. They run **mounted** on a real OS thread called a **Carrier Thread**.
+
+```
+JVM
+ │
+ ├── Carrier Thread 1 (OS/Platform Thread) ──► CPU Core 1
+ │        │
+ │    Virtual Thread A (running)
+ │
+ ├── Carrier Thread 2 (OS/Platform Thread) ──► CPU Core 2
+ │        │
+ │    Virtual Thread B (running)
+```
+
+---
+
+## The Magic — What Happens on Blocking
+
+```
+Virtual Thread A running on Carrier Thread 1
+        │
+        │ hits Thread.sleep() or I/O
+        │
+        ▼
+JVM UNMOUNTS Virtual Thread A   ◄── Key difference!
+        │
+Carrier Thread 1 is FREE
+        │
+        ▼
+JVM MOUNTS Virtual Thread B onto Carrier Thread 1
+        │
+Virtual Thread B now runs on CPU
+```
+
+With **platform threads**, the OS thread just sits idle and wastes CPU time during blocking.
+
+---
+
+## Side by Side
+
+```java
+// Platform Thread
+Thread.ofPlatform().start(() -> {
+    callAPI(); // OS thread STUCK waiting — CPU idle, thread wasted
+});
+
+// Virtual Thread
+Thread.ofVirtual().start(() -> {
+    callAPI(); // Virtual thread unmounted — carrier thread FREE for other work
+});
+```
+
+---
+
+## CPU Bound Work — Virtual vs Platform
+
+```java
+// CPU heavy task
+Thread.ofVirtual().start(() -> {
+    // Virtual thread stays MOUNTED the whole time
+    // Never unmounts because there's no blocking
+    for (int i = 0; i < 1_000_000; i++) {
+        Math.sqrt(i); // pure CPU
+    }
+});
+```
+
+For CPU work, virtual threads **never unmount** — they behave exactly like platform threads.
+That's why ForkJoinPool is still better for CPU-heavy work.
+
+---
+
+## Simple Mental Model
+
+```
+Virtual Thread = Carrier Thread (CPU) + Smart Parking
+
+Blocking happens?
+    → Park the virtual thread (save its state)
+    → Free the carrier thread for others
+    → Resume when blocking is done
+
+No blocking?
+    → Stays on carrier thread
+    → Runs normally on CPU
+```
+
+---
+
+## Bottom Line
+
+| | Virtual Thread | Platform Thread |
+|---|---|---|
+| Runs on CPU | ✅ Yes | ✅ Yes |
+| Blocked on I/O | Unmounts, frees carrier | Stuck, wastes OS thread |
+| CPU bound work | Stays mounted | Stays mounted |
+| Carrier threads | = CPU cores (small) | = OS threads (limited) |
+
+> Virtual threads **do run on CPU** via carrier threads.
+> The advantage is purely in **blocking scenarios** — they yield the carrier thread instead of wasting it.
+> For pure CPU work, they offer **no advantage** over platform threads.
+
+## Great Question! One Carrier CAN Host Many Virtual Threads!
+
+---
+
+## The Key Insight — Time Sharing
+
+A carrier thread doesn't have one dedicated virtual thread. It picks up **whatever virtual thread is ready to run.**
+
+```
+Time ──────────────────────────────────────────►
+
+Carrier Thread 1:
+  [VT-A running] [VT-B running] [VT-D running] [VT-A resumed] [VT-C running]
+        │               │              │
+     VT-A blocks    VT-B blocks    VT-D blocks
+     (unmounted)    (unmounted)    (unmounted)
+```
+
+---
+
+## Concrete Example
+
+```
+Say you have 1 Carrier Thread and 4 Virtual Threads
+Each virtual thread calls an API that takes 1 second
+
+Platform Thread (1 OS thread, 4 tasks):
+─────────────────────────────────────────────
+[VT-A: 1s wait] [VT-B: 1s wait] [VT-C: 1s wait] [VT-D: 1s wait]
+Total time = 4 seconds ❌ (sequential, thread blocked each time)
+
+
+Virtual Thread (1 Carrier Thread, 4 virtual threads):
+─────────────────────────────────────────────
+t=0 : VT-A starts API call → blocks → unmounts
+      VT-B starts API call → blocks → unmounts
+      VT-C starts API call → blocks → unmounts
+      VT-D starts API call → blocks → unmounts
+t=1 : All 4 API calls return → all 4 resume
+Total time = ~1 second ✅ (concurrent!)
+```
+
+---
+
+## What Actually Happens Inside JVM
+
+```
+1 Carrier Thread managing 4 Virtual Threads:
+
+t=0ms  → Mount VT-A, VT-A makes HTTP call
+         VT-A BLOCKS → Unmount VT-A (parked)
+         
+t=1ms  → Mount VT-B, VT-B makes DB call  
+         VT-B BLOCKS → Unmount VT-B (parked)
+
+t=2ms  → Mount VT-C, VT-C makes file I/O
+         VT-C BLOCKS → Unmount VT-C (parked)
+
+t=1000ms → HTTP response arrives for VT-A
+           Mount VT-A back → continues execution
+           
+t=1001ms → DB response arrives for VT-B
+           Mount VT-B back → continues execution
+```
+
+---
+
+## The Real Power — Scale This Up
+
+```java
+// 1 Million virtual threads — only ~8 carrier threads (CPU cores)
+ExecutorService vExec = Executors.newVirtualThreadPerTaskExecutor();
+
+IntStream.range(0, 1_000_000).forEach(i ->
+    vExec.submit(() -> {
+        callExternalAPI(); // each blocks, unmounts, carrier is free
+        return i;
+    })
+);
+
+// Carrier threads are NEVER idle
+// They constantly pick up ready virtual threads
+// Like a waiter serving many tables, not standing at one table waiting
+```
+
+---
+
+## Waiter Analogy 🧑‍🍳
+
+```
+Platform Thread = 1 waiter per table
+  Waiter stands at table waiting for food to arrive
+  Can't serve other tables meanwhile
+  Need 1000 waiters for 1000 tables ❌
+
+Virtual Thread = 1 waiter, many tables
+  Takes order (starts task)
+  Goes to other tables while kitchen prepares (blocking)
+  Comes back when food is ready (unblocks)
+  1 waiter handles 1000 tables ✅
+```
+
+---
+
+## Bottom Line
+
+> One carrier thread hosts **many** virtual threads — not just one.
+> When a virtual thread blocks, carrier immediately picks up the **next ready virtual thread.**
+> This is why 8 carrier threads can manage **millions** of virtual threads efficiently.
+> The carrier is **never sitting idle** — it's always executing some ready virtual thread.
