@@ -1,0 +1,124 @@
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
+# Spring Boot Multi-Executor Configuration
+## Virtual Threads (I/O) + Platform Thread Pool (CPU)
+
+---
+
+## Step 1: Configuration Class
+
+```java
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
+import java.util.concurrent.Executor;
+
+@Configuration
+@EnableAsync
+public class MultiExecutorConfig {
+
+    @Bean(name = "virtualThreadExecutor")
+    public Executor virtualThreadExecutor() {
+        SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor();
+        executor.setVirtualThreads(true);
+        executor.setThreadNamePrefix("io-virtual-");
+        return executor;
+    }
+
+    @Bean(name = "cpuTaskExecutor")
+    public Executor cpuTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        int cores = Runtime.getRuntime().availableProcessors();
+        executor.setCorePoolSize(cores);
+        executor.setMaxPoolSize(cores);
+        executor.setQueueCapacity(1000);
+        executor.setThreadNamePrefix("cpu-platform-");
+        executor.initialize();
+        return executor;
+    }
+}
+```
+
+---
+
+## Step 2: Service with Dual Async Methods
+
+```java
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+import java.util.concurrent.CompletableFuture;
+
+@Service
+public class TaskService {
+
+    @Async("virtualThreadExecutor")
+    public CompletableFuture<String> fetchExternalData(String url) {
+        System.out.println("Fetching API data on: " + Thread.currentThread().getName());
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return CompletableFuture.completedFuture("API Response Content");
+    }
+
+    @Async("cpuTaskExecutor")
+    public CompletableFuture<Integer> processHeavyData(String rawData) {
+        System.out.println("Processing calculations on: " + Thread.currentThread().getName());
+        int result = rawData.hashCode() * 42;
+        return CompletableFuture.completedFuture(result);
+    }
+}
+```
+
+---
+
+## Step 3: Controller Integration
+
+```java
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import java.util.concurrent.CompletableFuture;
+
+@RestController
+public class IntegrationController {
+
+    private final TaskService taskService;
+
+    public IntegrationController(TaskService taskService) {
+        this.taskService = taskService;
+    }
+
+    @GetMapping("/execute-pipeline")
+    public CompletableFuture<Integer> runPipeline() {
+        return taskService.fetchExternalData("https://example.com")
+                .thenCompose(apiData -> taskService.processHeavyData(apiData));
+    }
+}
+```
+
+---
+
+## Key Design Points
+
+**Virtual Threads (I/O Tasks)**
+- One executor per task spawned
+- No thread pool limits
+- Ideal for API calls, database queries, blocking I/O
+- Low CPU overhead, high concurrency
+
+**Platform Thread Pool (CPU Tasks)**
+- Core pool size = number of CPU cores
+- Prevents context-switching overhead
+- Ideal for intensive calculations, encryption, parsing
+- Bounded concurrency matches hardware capacity
+
+**Pipeline Composition**
+- Use `thenCompose()` to chain async results
+- I/O data flows directly into CPU processing
+- Both executors work independently without blocking
