@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CompletableFuture — Compose & Error Signatures</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;500;700&family=Spectral:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#13110d; --paper:#1e1b15; --paper2:#262219; --edge:#3a3527;
+    --cream:#ece3cf; --muted:#a79f88;
+    --compose:#7fb3e0; --exc:#e8b341; --handle:#9ec96b; --when:#c98bd1;
+    --T:#5ec8c0; --Thr:#e07a6b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:
+      radial-gradient(1100px 560px at 85% -8%, rgba(127,179,224,.10), transparent 60%),
+      radial-gradient(900px 480px at -10% 108%, rgba(201,139,209,.10), transparent 55%),
+      var(--ink);
+    color:var(--cream); font-family:"Spectral",Georgia,serif; line-height:1.5;
+    padding:clamp(18px,4vw,56px); min-height:100vh;
+  }
+  .wrap{max-width:860px;margin:0 auto}
+  header{margin-bottom:30px}
+  .kicker{font-family:"JetBrains Mono",monospace;font-size:11px;letter-spacing:.32em;
+    text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+  h1{font-family:"Bricolage Grotesque",sans-serif;font-weight:800;line-height:.95;
+    font-size:clamp(32px,7.5vw,56px);letter-spacing:-.02em}
+  h1 .mono{font-family:"JetBrains Mono",monospace;font-weight:700;font-size:.55em;color:var(--exc)}
+  .sub{color:var(--muted);font-size:clamp(15px,2.4vw,18px);max-width:62ch;margin-top:10px}
+  .sub b{color:var(--cream);font-weight:500}
+
+  section{margin-top:34px;opacity:0;transform:translateY(14px);
+    animation:rise .6s cubic-bezier(.2,.7,.2,1) forwards}
+  section:nth-of-type(1){animation-delay:.05s}
+  section:nth-of-type(2){animation-delay:.18s}
+  section:nth-of-type(3){animation-delay:.30s}
+  @keyframes rise{to{opacity:1;transform:none}}
+  .label{font-family:"Bricolage Grotesque",sans-serif;font-weight:800;font-size:13px;
+    letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:16px;
+    display:flex;align-items:center;gap:10px}
+  .label::after{content:"";flex:1;height:1px;background:var(--edge)}
+
+  /* signature cards */
+  .cards{display:grid;gap:14px}
+  .card{background:var(--paper);border:1px solid var(--edge);border-radius:16px;
+    padding:18px 18px 16px;border-left:4px solid var(--c)}
+  .card .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .card .name{font-family:"JetBrains Mono",monospace;font-weight:700;font-size:19px;color:var(--c)}
+  .card .role{font-family:"Spectral",serif;font-style:italic;font-size:13px;color:var(--muted)}
+  .sig{font-family:"JetBrains Mono",monospace;font-size:14px;margin-top:12px;
+    background:var(--ink);border:1px solid var(--edge);border-radius:10px;padding:12px 14px;
+    overflow-x:auto;white-space:nowrap}
+  .sig .k{color:var(--muted)}
+  .sig .t{color:var(--T)} .sig .thr{color:var(--Thr)} .sig .c{color:var(--c)}
+  .meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .chip{font-family:"JetBrains Mono",monospace;font-size:11px;padding:5px 10px;border-radius:7px;
+    border:1px solid var(--edge);color:var(--muted)}
+  .chip b{color:var(--cream);font-weight:500}
+  .card p{font-size:13.5px;color:var(--muted);margin-top:11px}
+  .card p b{color:var(--cream);font-weight:500}
+  .compose{--c:var(--compose)} .exc{--c:var(--exc)} .handle{--c:var(--handle)} .when{--c:var(--when)}
+
+  /* comparison table */
+  .table{overflow-x:auto;border:1px solid var(--edge);border-radius:14px}
+  table{border-collapse:collapse;width:100%;min-width:520px;font-size:13.5px}
+  th,td{padding:12px 14px;text-align:left;border-bottom:1px solid var(--edge)}
+  thead th{font-family:"Bricolage Grotesque",sans-serif;font-weight:800;font-size:12px;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--paper2)}
+  tbody th{font-family:"JetBrains Mono",monospace;font-weight:700;background:var(--paper)}
+  tbody tr:last-child td,tbody tr:last-child th{border-bottom:none}
+  .exc-c{color:var(--exc)} .handle-c{color:var(--handle)} .when-c{color:var(--when)}
+  .yes{color:var(--handle);font-weight:500} .no{color:var(--Thr);font-weight:500}
+  td small{color:var(--muted)}
+
+  footer{margin-top:34px;padding-top:18px;border-top:1px solid var(--edge);
+    font-family:"JetBrains Mono",monospace;font-size:11.5px;color:var(--muted);line-height:1.75}
+  footer b{color:var(--cream);font-weight:500}
+
+  @media(max-width:560px){
+    .card .name{font-size:17px}.sig{font-size:12.5px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">Java · async memory map — part 3</div>
+    <h1>Compose &amp; <span class="mono">errors</span><br>by signature.</h1>
+    <p class="sub">Four methods, four different functional interfaces. The shape of the lambda you pass tells you exactly what each one can do — and whether it can <b>recover</b>, <b>transform</b>, or only <b>watch</b>.</p>
+  </header>
+
+  <section>
+    <div class="label">The signatures</div>
+    <div class="cards">
+
+      <div class="card compose">
+        <div class="top"><span class="name">thenCompose</span><span class="role">flatMap · sequence a dependent async call</span></div>
+        <div class="sig"><span class="k">Function&lt;</span><span class="t">T</span><span class="k">, CompletableFuture&lt;</span><span class="c">U</span><span class="k">&gt;&gt;  →  CompletableFuture&lt;</span><span class="c">U</span><span class="k">&gt;</span></div>
+        <div class="meta">
+          <span class="chip">fires on <b>success</b></span>
+          <span class="chip">returns <b>CF&lt;U&gt;</b></span>
+          <span class="chip">transforms <b>yes</b></span>
+        </div>
+        <p>Your lambda returns <b>another future</b>. Compose flattens <b>CF&lt;CF&lt;U&gt;&gt;</b> into <b>CF&lt;U&gt;</b>. Use when step B depends on step A's result and is itself async.</p>
+      </div>
+
+      <div class="card exc">
+        <div class="top"><span class="name">exceptionally</span><span class="role">recover · failure only</span></div>
+        <div class="sig"><span class="k">Function&lt;</span><span class="thr">Throwable</span><span class="k">, </span><span class="t">T</span><span class="k">&gt;  →  CompletableFuture&lt;</span><span class="t">T</span><span class="k">&gt;</span></div>
+        <div class="meta">
+          <span class="chip">fires on <b>failure</b></span>
+          <span class="chip">returns <b>CF&lt;T&gt;</b> (same T)</span>
+          <span class="chip">recovers <b>yes</b></span>
+        </div>
+        <p>Only runs if upstream failed. On success the value passes straight through untouched. Can't change the type — the fallback must be the same <b>T</b>.</p>
+      </div>
+
+      <div class="card handle">
+        <div class="top"><span class="name">handle</span><span class="role">both paths · most powerful</span></div>
+        <div class="sig"><span class="k">BiFunction&lt;</span><span class="t">T</span><span class="k">, </span><span class="thr">Throwable</span><span class="k">, </span><span class="c">U</span><span class="k">&gt;  →  CompletableFuture&lt;</span><span class="c">U</span><span class="k">&gt;</span></div>
+        <div class="meta">
+          <span class="chip">fires on <b>both</b></span>
+          <span class="chip">returns <b>CF&lt;U&gt;</b></span>
+          <span class="chip">recovers <b>yes</b></span>
+        </div>
+        <p>Always runs. <b>Exactly one</b> argument is non-null — value on success, throwable on failure. Can recover <i>and</i> change the type. The Swiss-army knife.</p>
+      </div>
+
+      <div class="card when">
+        <div class="top"><span class="name">whenComplete</span><span class="role">observe · side-effect only</span></div>
+        <div class="sig"><span class="k">BiConsumer&lt;</span><span class="t">T</span><span class="k">, </span><span class="thr">Throwable</span><span class="k">&gt;  →  CompletableFuture&lt;</span><span class="t">T</span><span class="k">&gt;</span></div>
+        <div class="meta">
+          <span class="chip">fires on <b>both</b></span>
+          <span class="chip">returns <b>CF&lt;T&gt;</b> (passthrough)</span>
+          <span class="chip">recovers <b>no</b></span>
+        </div>
+        <p>A <b>Consumer</b>, not a Function — returns nothing. The original value (or exception) propagates unchanged. For logging, metrics, cleanup. Cannot swallow the error.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="label">The three error handlers, side by side</div>
+    <div class="table">
+      <table>
+        <thead>
+          <tr><th>method</th><th>fires on</th><th>can recover?</th><th>changes type?</th><th>returns</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th class="exc-c">exceptionally</th>
+            <td>failure only</td>
+            <td class="yes">yes</td>
+            <td class="no">no <small>(same T)</small></td>
+            <td>CF&lt;T&gt;</td>
+          </tr>
+          <tr>
+            <th class="handle-c">handle</th>
+            <td>success + failure</td>
+            <td class="yes">yes</td>
+            <td class="yes">yes <small>(→ U)</small></td>
+            <td>CF&lt;U&gt;</td>
+          </tr>
+          <tr>
+            <th class="when-c">whenComplete</th>
+            <td>success + failure</td>
+            <td class="no">no</td>
+            <td class="no">no <small>(passthrough)</small></td>
+            <td>CF&lt;T&gt;</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:13.5px;color:var(--muted);margin-top:14px">
+      Mnemonic: <b style="color:var(--cream)">Function recovers, Consumer only watches.</b>
+      <span class="exc-c">exceptionally</span> &amp; <span class="handle-c">handle</span> take a <b style="color:var(--cream)">Function</b> → they return a new value, so they can swallow the error.
+      <span class="when-c">whenComplete</span> takes a <b style="color:var(--cream)">Consumer</b> → it returns nothing, so the original outcome flows on.
+    </p>
+  </section>
+
+  <footer>
+    <b>Async variants:</b> all four have <b>...Async(fn, executor)</b> — pass a virtual-thread executor for I/O-bound recovery.<br>
+    <b>Bonus (Java 12+):</b> <b>exceptionallyCompose</b> = recover by returning <b>another future</b> (e.g. retry a fallback service) — like exceptionally but flatMapped, the way thenCompose relates to thenApply.<br>
+    <b>Gotcha:</b> the Throwable is usually wrapped in <b>CompletionException</b> — unwrap with <b>getCause()</b> before matching on type.
+  </footer>
+
+</div>
+</body>
+</html>
